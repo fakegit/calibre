@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 from itertools import count
+from binascii import hexlify
 
 from PyQt5.Qt import (
     QApplication, QBuffer, QByteArray, QFontDatabase, QFontInfo, QHBoxLayout, QSize,
@@ -34,12 +35,14 @@ from calibre.srv.code import get_translations_data
 from calibre.utils.config import JSONConfig
 from calibre.utils.serialize import json_loads
 from polyglot.builtins import as_bytes, iteritems
+from polyglot.urllib import parse_qs
 
 try:
     from PyQt5 import sip
 except ImportError:
     import sip
 
+SANDBOX_HOST = FAKE_HOST.rpartition('.')[0] + '.sandbox'
 vprefs = JSONConfig('viewer-webengine')
 viewer_config_dir = os.path.join(config_dir, 'viewer')
 vprefs.defaults['session_data'] = {}
@@ -115,14 +118,35 @@ class UrlSchemeHandler(QWebEngineUrlSchemeHandler):
         QWebEngineUrlSchemeHandler.__init__(self, parent)
         self.mathjax_dir = P('mathjax', allow_user_override=False)
         self.mathjax_manifest = None
-        self.allowed_hosts = (FAKE_HOST, FAKE_HOST.rpartition('.')[0] + '.sandbox')
+        self.allowed_hosts = (FAKE_HOST, SANDBOX_HOST)
+        self.sandbox_root = ''
+
+    def serve_book_file(self, name, rq):
+        try:
+            data, mime_type = get_data(name)
+            if data is None:
+                rq.fail(rq.UrlNotFound)
+                return
+            data = as_bytes(data)
+            mime_type = {
+                # Prevent warning in console about mimetype of fonts
+                'application/vnd.ms-opentype':'application/x-font-ttf',
+                'application/x-font-truetype':'application/x-font-ttf',
+                'application/font-sfnt': 'application/x-font-ttf',
+            }.get(mime_type, mime_type)
+            send_reply(rq, mime_type, data)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            rq.fail(rq.RequestFailed)
 
     def requestStarted(self, rq):
         if bytes(rq.requestMethod()) != b'GET':
             rq.fail(rq.RequestDenied)
             return
         url = rq.requestUrl()
-        if url.host() not in self.allowed_hosts or url.scheme() != FAKE_PROTOCOL:
+        host = url.host()
+        if host not in self.allowed_hosts or url.scheme() != FAKE_PROTOCOL:
             rq.fail(rq.UrlNotFound)
             return
         name = url.path()[1:]
@@ -134,23 +158,19 @@ class UrlSchemeHandler(QWebEngineUrlSchemeHandler):
             elif name == '__popup__':
                 send_reply(rq, 'text/html', b'<div id="calibre-viewer-footnote-iframe">\xa0</div>')
                 return
-            try:
-                data, mime_type = get_data(name)
-                if data is None:
-                    rq.fail(rq.UrlNotFound)
-                    return
-                data = as_bytes(data)
-                mime_type = {
-                    # Prevent warning in console about mimetype of fonts
-                    'application/vnd.ms-opentype':'application/x-font-ttf',
-                    'application/x-font-truetype':'application/x-font-ttf',
-                    'application/font-sfnt': 'application/x-font-ttf',
-                }.get(mime_type, mime_type)
-                send_reply(rq, mime_type, data)
-            except Exception:
-                import traceback
-                traceback.print_exc()
-                rq.fail(rq.RequestFailed)
+            if host == FAKE_HOST:
+                query = url.query()
+                if query:
+                    query = parse_qs(query)
+                    if query.get('is_root_name') == [create_profile.secret]:
+                        if '/' in name:
+                            self.sandbox_root = name.rpartition('/')[0]
+                        else:
+                            self.sandbox_root = ''
+            elif host == SANDBOX_HOST:
+                if self.sandbox_root:
+                    name = self.sandbox_root + '/' + name
+            self.serve_book_file(name, rq)
         elif name == 'manifest':
             data = b'[' + set_book_path.manifest + b',' + set_book_path.metadata + b']'
             send_reply(rq, set_book_path.manifest_mime, data)
@@ -217,6 +237,7 @@ def create_profile():
         s.setDefaultTextEncoding('utf-8')
         s.setAttribute(s.LinksIncludedInFocusChain, False)
         create_profile.ans = ans
+        create_profile.secret = as_unicode(hexlify(os.urandom(32)))
     return ans
 
 
@@ -483,7 +504,7 @@ class WebView(RestartingWebEngineView):
         fi = QFontInfo(f)
         self.bridge.create_view(
             vprefs['session_data'], QFontDatabase().families(), field_metadata.all_metadata(),
-            f.family(), '{}px'.format(fi.pixelSize()), self.show_home_page_on_ready)
+            f.family(), '{}px'.format(fi.pixelSize()), self.show_home_page_on_ready, create_profile.secret)
         for func, args in iteritems(self.pending_bridge_ready_actions):
             getattr(self.bridge, func)(*args)
 

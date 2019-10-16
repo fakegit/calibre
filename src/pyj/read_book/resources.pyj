@@ -41,7 +41,7 @@ def load_resources(book, root_name, previous_resources, proceed):
             if jstype(data[0]) is 'string':
                 find_virtualized_resources(data[0])
             return setTimeout(do_one, 0)
-        ui_operations.get_file(book, name, got_one)
+        ui_operations.get_file(book, name, got_one, name is root_name)
 
     def got_one(data, name, mimetype):
         ans[name] = v'[data, mimetype]'

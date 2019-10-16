@@ -52,9 +52,10 @@ def file_received(name, file_data, proceed, end_type, xhr, ev):
     proceed(result, name, file_data.mimetype, book)
 
 
-def get_file(book, name, proceed):
+def get_file(book, name, proceed, is_root_name):
     entry = book.manifest.files[name]
-    xhr = ajax('book/' + name, file_received.bind(None, name, entry, proceed), ok_code=0)
+    query = {'is_root_name': get_file.secret} if is_root_name else None
+    xhr = ajax('book/' + name, file_received.bind(None, name, entry, proceed), ok_code=0, query=query)
     if entry.is_html or entry.mimetype.startswith('text/') or entry.mimetype is 'application/javascript':
         xhr.responseType = 'text'
     else:
@@ -189,8 +190,9 @@ def create_session_data(prefs):
 
 
 @from_python
-def create_view(prefs, all_font_families, field_metadata, ui_font_family, ui_font_sz, show_home_page_on_ready):
+def create_view(prefs, all_font_families, field_metadata, ui_font_family, ui_font_sz, show_home_page_on_ready, secret):
     nonlocal view
+    get_file.secret = secret
     runtime.all_font_families = all_font_families
     library_data.field_metadata = field_metadata
     document.documentElement.style.fontFamily = f'"{ui_font_family}", sans-serif'
